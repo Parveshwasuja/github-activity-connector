@@ -1,6 +1,9 @@
 # github-activity-connector
 To fetch the repository and commits
 
+Once the repo code is in the local system, start the springboot application.
+By default the port no will be 8080.
+
 Hit this rest endpoint and get the required response of repositories and 20 most recent commits for each repository fetched : http://localhost:8080/api/github/repos/<github_user-name>
 
 Headers : 
