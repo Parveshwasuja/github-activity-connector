@@ -1,33 +1,9 @@
-# github-activity-connector
-To fetch the repository and commits
+# Firebase (Firestore) – GitHub-to-Firestore Sync Agent
+
+ a data sync agent between GitHub and Firebase.
 
 Once the repo code is in the local system, start the springboot application.
 By default the port no will be 8080.
 
-Hit this rest endpoint and get the required response of repositories and 20 most recent commits for each repository fetched : http://localhost:8080/api/github/repos/<github_user-name>
-
-Headers : 
-Key : Authorization
-Value : Personal Access token
-
-Sample request : http://localhost:8080/api/github/repos/Parveshwasuja
-Sample Response : 
-[
-    {
-        "name": "Airline_Reservation",
-        "fullName": "Parveshwasuja/Airline_Reservation",
-        "url": "https://github.com/Parveshwasuja/Airline_Reservation",
-        "commits": [
-            {
-                "message": "Updated this file",
-                "author": "Parveshwasuja",
-                "timestamp": "2018-12-16T09:59:05Z"
-            },
-            {
-                "message": "Files uploaded",
-                "author": "Parveshwasuja",
-                "timestamp": "2018-12-16T09:37:44Z"
-            }
-        ]
-    }
-]
+Hit this rest endpoint and the issues will be persisted to the firebase.
+http://localhost:8080/api/github/repos/<owner>/<repo>
