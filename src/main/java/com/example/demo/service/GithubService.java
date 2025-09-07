@@ -1,140 +1,142 @@
 package com.example.demo.service;
 
 import java.io.IOException;
-import java.time.Instant;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.net.URL;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import com.example.demo.model.Commit;
-import com.example.demo.model.Repository;
+import com.example.demo.common.FirebaseConstants;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.Response;
 
 @Service
 public class GithubService {
-    private final OkHttpClient client;
+	private final HttpClient httpClient;
     private final ObjectMapper mapper;
 
     @Autowired
     public GithubService() {
-        this.client = new OkHttpClient();
+    	this.httpClient = HttpClient.newHttpClient();
         this.mapper = new ObjectMapper();
     }
 
-    public List<Repository> fetchRepositories(String userOrOrg, String token) throws IOException {
-        List<Repository> repositories = new ArrayList<>();
-        int page = 1;
-
-        while (true) {
-            String url = String.format("https://api.github.com/users/%s/repos?per_page=100&page=%d", userOrOrg, page);
-            Request request = new Request.Builder()
-                .url(url)
-                .header("Authorization", "token " + token)
-                .build();
-
-            try (Response response = retryRequest(request, 3)) {
-                if (!response.isSuccessful()) {
-                    throw new IOException("Failed to fetch repositories: " + response);
-                }
-
-                List<Map<String, Object>> repoData = mapper.readValue(response.body().string(), List.class);
-                if (repoData.isEmpty()) break;
-
-                for (Map<String, Object> repoJson : repoData) {
-                    String repoName = (String) repoJson.get("name");
-                    String fullName = (String) repoJson.get("full_name");
-
-                    List<Commit> commits = fetchCommits(fullName, token);
-                    Repository repo = new Repository();
-                    repo.setName(repoName);
-                    repo.setFullName(fullName);
-                    repo.setUrl((String) repoJson.get("html_url"));
-                    repo.setCommits(commits);
-
-                    repositories.add(repo);
-                }
-                page++;
-            }
-        }
-
-        return repositories;
-    }
-
-    private List<Commit> fetchCommits(String fullRepoName, String token) throws IOException {
-        List<Commit> commits = new ArrayList<>();
-
-        String url = String.format("https://api.github.com/repos/%s/commits?per_page=20", fullRepoName);
-        Request request = new Request.Builder()
-            .url(url)
-            .header("Authorization", "token " + token)
+    public List<JsonNode> fetchIssues(String owner, String repo) throws IOException {
+    	String url = String.format("https://api.github.com/repos/%s/%s/issues?state=all&sort=created&direction=desc&per_page=5", owner, repo);
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(url))
+            .header("Accept", "application/vnd.github+json")
             .build();
 
-        try (Response response = client.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                return Collections.emptyList(); // skip repo on error
-            }
-
-            List<Map<String, Object>> commitData = mapper.readValue(response.body().string(), List.class);
-            for (Map<String, Object> commitJson : commitData) {
-                Map<String, Object> commitInfo = (Map<String, Object>) commitJson.get("commit");
-                Map<String, Object> authorInfo = (Map<String, Object>) commitInfo.get("author");
-
-                Commit commit = new Commit();
-                commit.setMessage((String) commitInfo.get("message"));
-                commit.setAuthor((String) authorInfo.get("name"));
-                commit.setTimestamp((String) authorInfo.get("date"));
-                commits.add(commit);
-            }
+        HttpResponse<String> response = null;
+		try {
+			response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("Failed to fetch issues from GitHub: " + response.body());
         }
-
-        return commits;
+        return mapper.readValue(response.body(), mapper.getTypeFactory().constructCollectionType(List.class, JsonNode.class));
     }
     
-    private Response makeRequestWithRateLimitHandling(Request request) throws IOException {
-        Response response = client.newCall(request).execute();
+    public List<Map<String, Object>> fetchTopNIssues(String owner, String repo, int n) throws Exception {
+        List<Map<String, Object>> issues = new ArrayList<>();
+        int page = 1;
 
-        if (response.code() == 403 && response.header("X-RateLimit-Remaining", "1").equals("0")) {
-            long resetTime = Long.parseLong(response.header("X-RateLimit-Reset", "0"));
-            long waitTimeSeconds = resetTime - Instant.now().getEpochSecond();
-            response.close();
+        while (issues.size() < n) {
+            String apiUrl = String.format(
+                "https://api.github.com/repos/%s/%s/issues?state=all&sort=created&direction=desc&per_page=%d&page=%d",
+                owner, repo, FirebaseConstants.perPage, page
+            );
 
-            throw new IOException("GitHub rate limit exceeded. Try again in " + waitTimeSeconds + " seconds.");
+            URL url = new URL(apiUrl);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestProperty("Accept", "application/vnd.github+json");
+
+            int status = conn.getResponseCode();
+            if (status != 200) {
+                throw new RuntimeException("GitHub API error: " + status);
+            }
+
+            InputStream is = conn.getInputStream();
+            JsonNode root = mapper.readTree(is);
+
+            if (root.isEmpty()) break; // No more issues
+
+            for (JsonNode node : root) {
+                // Skip pull requests
+                if (node.has("pull_request")) continue;
+
+                Map<String, Object> issue = new HashMap<>();
+                issue.put("id", node.get("id").asText());
+                issue.put("title", node.get("title").asText());
+                issue.put("created_at", node.get("created_at").asText());
+                issue.put("state", node.get("state").asText());
+                issue.put("html_url", node.get("html_url").asText());
+
+                issues.add(issue);
+
+                if (issues.size() >= n) break; // Stop if we reached the top N
+            }
+
+            page++; // Move to next page
         }
 
-        if (!response.isSuccessful()) {
-            String errorBody = response.body() != null ? response.body().string() : "No body";
-            response.close();
-
-            throw new IOException("Request failed with status " + response.code() + ": " + errorBody);
-        }
-
-        return response;
+        return issues;
     }
-    
-    private Response retryRequest(Request request, int maxRetries) throws IOException {
+
+    public List<Map<String, Object>> fetchTopNIssuesWithRetry(String owner, String repo, int n) throws Exception {
+        final int MAX_RETRIES = 3;
+        final long INITIAL_BACKOFF_MS = 1000;
         int attempt = 0;
-        while (attempt < maxRetries) {
+        long backoff = INITIAL_BACKOFF_MS;
+
+        while (attempt < MAX_RETRIES) {
             try {
-                return makeRequestWithRateLimitHandling(request);
+                return fetchTopNIssues(owner, repo, n);  // The original method
             } catch (IOException e) {
                 attempt++;
-                if (attempt == maxRetries) {
-                    throw new IOException("Request failed after " + maxRetries + " attempts: " + e.getMessage(), e);
+                System.err.println("Network error on attempt " + attempt + ": " + e.getMessage());
+            } catch (RuntimeException e) {
+                if (isRetryableApiException(e)) {
+                    attempt++;
+                    System.err.println("GitHub API transient error on attempt " + attempt + ": " + e.getMessage());
+                } else {
+                    // Not retryable
+                    throw e;
                 }
-                try {
-                    Thread.sleep(1000L * attempt); // Exponential backoff
-                } catch (InterruptedException ignored) {}
             }
+
+            // Wait before retrying
+            try {
+                Thread.sleep(backoff);
+            } catch (InterruptedException ignored) {}
+            backoff *= 2;  // exponential backoff
         }
-        throw new IOException("Unexpected error in retryRequest");
+
+        throw new RuntimeException("Failed to fetch issues after " + MAX_RETRIES + " retries.");
     }
+    
+    private boolean isRetryableApiException(RuntimeException e) {
+        String msg = e.getMessage();
+        return msg.contains("502") || msg.contains("503") || msg.contains("504");
+    }
+
+
 }
 
